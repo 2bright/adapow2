@@ -83,8 +83,16 @@ def fit_loop(model,
   Raises:
       ValueError: in case of invalid arguments.
   """
-  model._make_train_function()
-  f = model.train_function
+
+  if hasattr(model.optimizer, 'on_train_begin'):
+    optimizer_on_train_begin = model.optimizer.on_train_begin
+  else:
+    optimizer_on_train_begin = lambda *args: None
+
+  if hasattr(model.optimizer, 'on_train_end'):
+    optimizer_on_train_end = model.optimizer.on_train_end
+  else:
+    optimizer_on_train_end = lambda *args: None
 
   if hasattr(model.optimizer, 'on_epoch_begin'):
     optimizer_on_epoch_begin = model.optimizer.on_epoch_begin
@@ -99,12 +107,18 @@ def fit_loop(model,
   if hasattr(model.optimizer, 'on_iteration_begin'):
     optimizer_on_iteration_begin = model.optimizer.on_iteration_begin
   else:
-    optimizer_on_iteration_begin = lambda *args: True
+    optimizer_on_iteration_begin = lambda *args: None
 
+  # if on_iteration_end return True, then current batch is finished
   if hasattr(model.optimizer, 'on_iteration_end'):
     optimizer_on_iteration_end = model.optimizer.on_iteration_end
   else:
     optimizer_on_iteration_end = lambda *args: True
+
+  if hasattr(model.optimizer, 'shuffle'):
+    get_shuffle = lambda: model.optimizer.shuffle
+  else:
+    get_shuffle = lambda: shuffle
 
   sample_weights = sample_weights or []
   val_sample_weights = val_sample_weights or []
@@ -131,6 +145,16 @@ def fit_loop(model,
 
   num_train_samples = training_utils.check_num_samples(
       ins, batch_size, steps_per_epoch, 'steps_per_epoch')
+
+  train_logs = {
+    'epoch_num': epochs,
+    'batch_num': int(np.ceil(num_train_samples / batch_size)),
+  }
+  optimizer_on_train_begin(train_logs)
+
+  model._make_train_function()
+  f = model.train_function
+
   count_mode = 'steps' if steps_per_epoch else 'samples'
   callbacks = cbks.configure_callbacks(
       callbacks,
@@ -211,9 +235,9 @@ def fit_loop(model,
           epoch_logs['val_' + l] = o
     else:
       # Sample-wise fit loop.
-      if shuffle == 'batch':
+      if get_shuffle() == 'batch':
         index_array = training_utils.batch_shuffle(index_array, batch_size)
-      elif shuffle:
+      elif get_shuffle():
         np.random.shuffle(index_array)
 
       batches = make_batches(num_train_samples, batch_size)
@@ -245,11 +269,8 @@ def fit_loop(model,
         callbacks.on_batch_begin(batch_index, batch_logs)
 
         while True:
-          if not optimizer_on_iteration_begin(batch_logs):
-            break
-
+          optimizer_on_iteration_begin(batch_logs)
           outs = f(ins_batch)
-
           if optimizer_on_iteration_end(batch_logs):
             break
 
@@ -284,6 +305,7 @@ def fit_loop(model,
     if callbacks.model.stop_training:
       break
   callbacks.on_train_end()
+  optimizer_on_train_end(train_logs)
   return model.history
 
 
