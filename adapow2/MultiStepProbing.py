@@ -16,6 +16,7 @@ class MultiStepProbing(Optimizer):
       config['tiny_step_size']: float > 0. the tiny unit step size on one parameter.
       config['static_pow2']: list of float. a list of pow2 for early epochs, the last pow2 for the remaining epochs. If static_pow2 is not None, step size will not be adjusted automatically. e.g. config['static_pow2'] = list(numpy.linspace(max_pow2, min_pow2, epoch_number))
       config['loss_ema_beta']: float >= 0. beta parameter for ema average of loss.
+      config['loss_diff_ema_beta']: float >= 0. beta parameter for ema average of loss diff between epochs.
       config['store_history_state']: bool. If True, storing 'pow2, loss, loss_ema' of each batch in config['history_state_path'] directory as json file and plot image.
       config['history_state_path']: string. directory path for storing history state.
   """
@@ -28,6 +29,7 @@ class MultiStepProbing(Optimizer):
       'tiny_step_size': 1e-6,
       'static_pow2': None,
       'loss_ema_beta': 0.99,
+      'loss_diff_ema_beta': 0.99,
       'store_history_state': False,
       'history_state_path': 'data.MultiStepProbing',
     }
@@ -38,19 +40,58 @@ class MultiStepProbing(Optimizer):
 
     self.stop_training_batch = K.variable(True, dtype='bool')
     self.pow2 = K.variable(5., dtype='float32')
+    self.shuffle = False
 
   def get_config(self):
     base_config = super(MultiStepProbing, self).get_config()
     return dict(list(base_config.items()) + list(self._config.items()))
+
+  def on_train_begin(self, train_logs):
+    self.prev_epoch_losses = K.variable(np.array([np.inf] * train_logs['batch_num']), dtype='float32')
+    self.batch_i = K.variable(0, dtype='int32')
+    self.epoch_i = K.variable(0, dtype='int32')
+
+    self.loss_diff = K.variable(0., dtype='float32')
+    self.loss_diff_ema_i = K.variable(0., dtype='float32')
+    self.loss_diff_ema_unfixed = K.variable(0., dtype='float32')
+    self.loss_diff_ema = K.variable(0., dtype='float32')
 
   def on_epoch_begin(self, epoch):
     self._history_state = None
 
     if self._config['static_pow2'] is not None:
       static_pow2 = self._config['static_pow2'] if isinstance(self._config['static_pow2'], list) else [self._config['static_pow2']]
-      K.get_session().run([
-        self.pow2.assign(static_pow2[min(epoch, len(static_pow2) - 1)]),
-      ])
+      if epoch <= 1:
+        K.get_session().run([
+          self.pow2.assign(static_pow2[min(epoch, len(static_pow2) - 1)]),
+          self.epoch_i.assign(epoch),
+          self.batch_i.assign(0),
+          self.loss_diff.assign(0.),
+          self.loss_diff_ema_i.assign(0.),
+          self.loss_diff_ema_unfixed.assign(0.),
+          self.loss_diff_ema.assign(0.),
+        ])
+      else:
+        K.get_session().run([
+          self.pow2.assign(static_pow2[min(epoch, len(static_pow2) - 1)]),
+          self.epoch_i.assign(epoch),
+          self.batch_i.assign(0),
+        ])
+    else:
+      if epoch <= 1:
+        K.get_session().run([
+          self.epoch_i.assign(epoch),
+          self.batch_i.assign(0),
+          self.loss_diff.assign(0.),
+          self.loss_diff_ema_i.assign(0.),
+          self.loss_diff_ema_unfixed.assign(0.),
+          self.loss_diff_ema.assign(0.),
+        ])
+      else:
+        K.get_session().run([
+          self.epoch_i.assign(epoch),
+          self.batch_i.assign(0),
+        ])
 
   def on_epoch_end(self, epoch, epoch_logs):
     if self._config['store_history_state']:
@@ -76,6 +117,8 @@ class MultiStepProbing(Optimizer):
     grads = self.get_gradients(loss, params)
     grad_norm = math_ops.sqrt(math_ops.reduce_sum([math_ops.reduce_sum(math_ops.square(g)) for g in grads]))
 
+    alpha_weaken_grads_min = 0.3
+    alpha_weaken_grads = K.variable(1., dtype='float32')
     alpha_cached_grads = K.variable(0., dtype='float32')
     tiny_step_norm = np.float32(self._config['tiny_step_size'] * np.sqrt(np.sum([np.prod(K.int_shape(p)) for p in params])))
 
@@ -97,8 +140,11 @@ class MultiStepProbing(Optimizer):
 
     self.state = {
       'pow2': self.pow2,
+      'alpha_weaken_grads': alpha_weaken_grads,
       'loss_now': loss_now,
       'loss_ema': loss_ema,
+      'loss_diff': self.loss_diff,
+      'loss_diff_ema': self.loss_diff_ema,
     }
 
     def cache_grads():
@@ -112,6 +158,12 @@ class MultiStepProbing(Optimizer):
       return K.constant(0)
 
     def on_descent():
+      batch_i_curr = K.variable(0, dtype='int32')
+      loss_diff_01 = control_flow_ops.cond(
+        math_ops.greater(self.prev_epoch_losses[self.batch_i], loss),
+        lambda: 1.,
+        lambda: 0.)
+
       with ops.control_dependencies([
         control_flow_ops.cond(math_ops.equal(grad_norm, 0.), on_zero_grads, cache_grads),
         self.stop_training_batch.assign(True),
@@ -119,13 +171,27 @@ class MultiStepProbing(Optimizer):
         loss_now.assign(loss),
         loss_max.assign(math_ops.maximum(loss_max, loss)),
         loss_min.assign(math_ops.minimum(loss_min, loss)),
-        loss_ema_unfixed.assign(loss * (1 - self._config['loss_ema_beta']) + loss_ema_unfixed * self._config['loss_ema_beta']),
+        loss_ema_unfixed.assign(
+          loss * (1 - self._config['loss_ema_beta']) +
+          loss_ema_unfixed * self._config['loss_ema_beta']
+          ),
         loss_ema_i.assign_add(1.),
+        self.loss_diff.assign(loss_diff_01),
+        self.loss_diff_ema_unfixed.assign(
+          loss_diff_01 * (1 - self._config['loss_diff_ema_beta']) + 
+          self.loss_diff_ema_unfixed * self._config['loss_diff_ema_beta']
+          ),
+        self.loss_diff_ema_i.assign_add(1.),
+        alpha_weaken_grads.assign(self.loss_diff_ema * (1 - alpha_weaken_grads_min) + alpha_weaken_grads_min),
+        batch_i_curr.assign(self.batch_i),
       ]):
         with ops.control_dependencies(
-          [p.assign_sub(g * alpha_cached_grads) for p, g in zip(params, cached_grads)] +
+          [p.assign_sub(g * alpha_cached_grads * alpha_weaken_grads) for p, g in zip(params, cached_grads)] +
           [
             loss_ema.assign(loss_ema_unfixed / (1 - math_ops.pow(self._config['loss_ema_beta'], loss_ema_i))),
+            self.loss_diff_ema.assign(self.loss_diff_ema_unfixed / (1 - math_ops.pow(self._config['loss_diff_ema_beta'], self.loss_diff_ema_i))),
+            self.batch_i.assign_add(1),
+            self.prev_epoch_losses[batch_i_curr].assign(loss),
           ]
         ):
           return K.constant(0)

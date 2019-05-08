@@ -34,19 +34,20 @@ def test_model(hp, md):
   print('shape:', ds['x_train'].shape)
   if md['model'] == 'mnist_vae':
     model, encoder, decoder = create_model(md['model'], optimizer=optimizer)
-    metrics = model.fit(ds['x_train'][:data_len], epochs=md['epochs'])
+    metrics = model.fit(ds['x_train'][:data_len], epochs=md['epochs'], batch_size=md['batch_size'])
     # plot_vae_results([encoder, decoder], [ds['x_test'], ds['y_test']], batch_size=md['batch_size'], model_name='data/mnist_vae')
   else:
     model = create_model(md['model'], optimizer=optimizer)
-    metrics = model.fit(ds['x_train'][:data_len], ds['y_train'][:data_len], epochs=md['epochs'])
+    metrics = model.fit(ds['x_train'][:data_len], ds['y_train'][:data_len], epochs=md['epochs'], batch_size=md['batch_size'])
   time2 = time.time()
   return time2 - time1, metrics.history, {} #model.optimizer.history_state_cache
 
 model_dataset_samples = kv.compile({
   ('model', 'dataset', 'epochs', 'batch_size', 'regularization'):
   [
-    (['mnist_logreg', 'mnist_2_layers'], 'mnist', 30, 128, 'l2'),
-    # (['mnist_logreg', 'mnist_2_layers', 'mnist_2_layers_l2', 'mnist_vae', 'mnist_mlp', 'mnist_2c2d'], 'mnist', 50, 128, 'l2'),
+    # (['mnist_logreg'], 'mnist', 10, 32, 'l2'),
+    (['mnist_logreg', 'mnist_2_layers', 'mnist_vae'], 'mnist', 50, 32, 'l2'),
+    (['mnist_logreg', 'mnist_2_layers', 'mnist_2_layers_l2', 'mnist_vae', 'mnist_mlp', 'mnist_2c2d'], 'mnist', 50, 32, 'l2'),
   ]
 })
 
