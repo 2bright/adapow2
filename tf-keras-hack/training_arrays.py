@@ -187,9 +187,9 @@ def fit_loop(model,
     for m in model.stateful_metric_functions:
       m.reset_states()
     # Update callbacks
-    optimizer_on_epoch_begin(epoch)
+    epoch_logs = {'epoch': epoch}
+    optimizer_on_epoch_begin(epoch_logs)
     callbacks.on_epoch_begin(epoch)
-    epoch_logs = {}
     if steps_per_epoch is not None:
       # Step-wise fit loop.
       for step_index in range(steps_per_epoch):
@@ -263,6 +263,8 @@ def fit_loop(model,
         batch_logs['batch'] = batch_index
         batch_logs['batch_num'] = len(batches)
         batch_logs['size'] = len(batch_ids)
+
+        # for adapow2/ohs/OptimizerHyperspaceSlice.py
         batch_logs['train_function'] = f
         batch_logs['inputs'] = ins_batch
 
@@ -301,7 +303,7 @@ def fit_loop(model,
             for l, o in zip(model.metrics_names, val_outs):
               epoch_logs['val_' + l] = o
     callbacks.on_epoch_end(epoch, epoch_logs)
-    optimizer_on_epoch_end(epoch, epoch_logs)
+    optimizer_on_epoch_end(epoch_logs)
     if callbacks.model.stop_training:
       break
   callbacks.on_train_end()

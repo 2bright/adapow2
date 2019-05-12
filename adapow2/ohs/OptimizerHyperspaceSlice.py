@@ -52,39 +52,43 @@ class OptimizerHyperspaceSlice(Optimizer):
   def from_config(cls, config):
     return OptimizerHyperspaceSlice(cls(**config), self.tiny_step, self.relative_sampling, self.absolute_sampling, self.save_path, self.plot)
 
-  def on_epoch_begin(self, epoch):
-    if hasattr(self.optimizer, 'on_epoch_begin'):
-      return self.optimizer.on_epoch_begin(epoch)
+  def on_train_begin(self, train_logs):
+    if hasattr(self.optimizer, 'on_train_begin'):
+      self.optimizer.on_train_begin(train_logs)
 
-  def on_epoch_end(self, epoch, epoch_logs):
+  def on_train_end(self, train_logs):
+    if hasattr(self.optimizer, 'on_train_end'):
+      self.optimizer.on_train_end(train_logs)
+
+  def on_epoch_begin(self, epoch_logs):
+    if hasattr(self.optimizer, 'on_epoch_begin'):
+      self.optimizer.on_epoch_begin(epoch_logs)
+
+  def on_epoch_end(self, epoch_logs):
     if hasattr(self.optimizer, 'on_epoch_end'):
-      return self.optimizer.on_epoch_end(epoch, epoch_logs)
+      self.optimizer.on_epoch_end(epoch_logs)
 
   def on_iteration_begin(self, batch_logs):
     if hasattr(self.optimizer, 'on_iteration_begin'):
-      return self.optimizer.on_iteration_begin(batch_logs)
-    else:
-      return True
+      self.optimizer.on_iteration_begin(batch_logs)
 
   def on_iteration_end(self, batch_logs):
     self.batch_logs = batch_logs
 
+    self._create_slice_1d()
+
     if hasattr(self.optimizer, 'on_iteration_end'):
-      stop_training_batch = self.optimizer.on_iteration_end(batch_logs)
+      return self.optimizer.on_iteration_end(batch_logs)
     else:
-      stop_training_batch = True
-
-    if stop_training_batch:
-      self._create_slice_1d()
-
-    return stop_training_batch
+      return True
 
   def _create_slice_1d(self):
     slice_1d = self.eval_slice_1d()
-    for _ in range(2, len(slice_1d['points']) + 1):
+    while (slice_1d['point_index'] <= slice_1d['num_of_points']):
       self.batch_logs['train_function'](self.batch_logs['inputs'])
-    slice_1d = self.eval_slice_1d()
-    if self.save_path and len(slice_1d['points']) > 0:
+      slice_1d = self.eval_slice_1d()
+    
+    if self.save_path:
       utils.save_slice_1d(slice_1d, self.save_path)
       if self.plot:
         utils.plot_slice_1d(slice_1d, self.save_path)
@@ -94,11 +98,14 @@ class OptimizerHyperspaceSlice(Optimizer):
     n = slice_1d['num_of_points']
     indices_sorted = list(sorted(range(n), key=lambda i: slice_1d['points'][i]))
     return {
+      'point_index': slice_1d['point_index'],
+      'num_of_points': n,
       'epoch': self.batch_logs['epoch'],
       'batch': self.batch_logs['batch'],
       'iterations': slice_1d['iterations'],
       'tiny_norm': self.tiny_norm,
       'step_norm': slice_1d['step_norm'],
+      'grad_norm': slice_1d['grad_norm'],
       'points': slice_1d['points'][:n][indices_sorted],
       'losses': slice_1d['losses'][:n][indices_sorted],
       'step_points': slice_1d['points'][:2],
@@ -115,6 +122,7 @@ class OptimizerHyperspaceSlice(Optimizer):
     point_index = K.variable(2, dtype='int32')
     step_norm = K.variable(0., dtype='float32')
     iterations = K.variable(0, dtype='int32')
+    grad_norm = K.variable(0., dtype='float32')
 
     self._slice_1d = {
       'points': points,
@@ -122,6 +130,7 @@ class OptimizerHyperspaceSlice(Optimizer):
       'num_of_points': num_of_points,
       'point_index': point_index,
       'step_norm': step_norm,
+      'grad_norm': grad_norm,
       'iterations': iterations,
     }
 
@@ -140,90 +149,116 @@ class OptimizerHyperspaceSlice(Optimizer):
           _store_initial_params,
           lambda: K.constant(True))
 
-    def compute_slice_1d_points():
-      def compute_points():
-        step_end_point = step_norm / self.tiny_norm
-        assign_relative_sampling_points = [
-          points[0].assign(0.),
-          points[1].assign(step_end_point),
-        ]
-        pi = 2
-        for i in range(len(self.relative_sampling)):
-          if self.relative_sampling[i] == 0 or self.relative_sampling[i] == 1:
-            continue
-          assign_relative_sampling_points.append(points[pi].assign(step_end_point * self.relative_sampling[i]))
-          pi += 1
+    def compute_losses_of_all_points():
+      def on_all_points_computed():
+        with ops.control_dependencies(
+          [p_prev.assign(p_cache) for p_prev, p_cache in zip(P_prev, P_cache)] +
+          [p.assign(p_cache) for p, p_cache in zip(P, P_cache)]
+        ):
+          return K.constant(1)
 
-        with ops.control_dependencies(assign_relative_sampling_points + [point_index.assign(pi)]):
-          min_relative_sampling_point = 0. if pi == 2 else (step_end_point * self.relative_sampling[0])
-          max_relative_sampling_point = 0. if pi == 2 else (step_end_point * self.relative_sampling[-1])
-          k_absolute_sampling = K.variable(self.absolute_sampling, dtype='float32')
-          def check_absolute_sampling_point(i):
-            def assign_absolute_sampling_point():
-              with ops.control_dependencies([
-                  points[point_index].assign(k_absolute_sampling[i]),
-                  point_index.assign_add(1),
-                ]):
-                return i + 1
-            return control_flow_ops.cond(math_ops.logical_or(
-                math_ops.less(k_absolute_sampling[i], min_relative_sampling_point),
-                math_ops.greater(k_absolute_sampling[i], max_relative_sampling_point)
-                ),
-                lambda: assign_absolute_sampling_point(),
-                lambda: i + 1)
-          assign_absolute_sampling_points = control_flow_ops.while_loop(
-              lambda i: math_ops.less(i, len(self.absolute_sampling)),
-              check_absolute_sampling_point,
-              [K.constant(0, dtype='int32')])
-          with ops.control_dependencies([assign_absolute_sampling_points]):
-            return num_of_points.assign(point_index)
-
-      def on_zero_step():
-        with ops.control_dependencies([num_of_points.assign(0)]):
+      def move_to_next_point():
+        alpha_S = (self.tiny_norm / step_norm) * points[point_index]
+        with ops.control_dependencies(
+          [p.assign(p_prev - s * alpha_S) for p, p_prev, s in zip(P, P_prev, S)]
+        ):
           return K.constant(0)
 
-      def on_none_zero_step():
-        with ops.control_dependencies([compute_points()]):
-          return K.constant(0)
-
-      assign_S = [s.assign(p_prev - p) for s, p_prev, p in zip(S, P_prev, P)]
-      with ops.control_dependencies(assign_S):
-        assign_P_cache = [p_cache.assign(p) for p_cache, p in zip(P_cache, P)]
-        with ops.control_dependencies(assign_P_cache):
-          assign_step_norm = step_norm.assign(math_ops.sqrt(math_ops.reduce_sum([math_ops.reduce_sum(math_ops.square(s)) for s in S])))
-          with ops.control_dependencies([assign_step_norm]):
-            return control_flow_ops.cond(math_ops.equal(step_norm, 0.), on_zero_step, on_none_zero_step)
-
-    def compute_slice_1d_loss():
-      def on_last_point():
-        with ops.control_dependencies([p_prev.assign(p_cache) for p_prev, p_cache in zip(P_prev, P_cache)]):
-          return [p.assign(p_cache) for p, p_cache in zip(P, P_cache)]
-      save_prev_loss = losses[point_index - 1].assign(loss)
-      with ops.control_dependencies([save_prev_loss]):
-        update_P = control_flow_ops.cond(
+      with ops.control_dependencies([
+        losses[point_index - 1].assign(loss) # this loss is loss of the previous point
+      ]):
+        with ops.control_dependencies([
+          control_flow_ops.cond(
             math_ops.less(point_index, num_of_points),
-            lambda: [p.assign(p_prev - s * ((self.tiny_norm / step_norm) * points[point_index])) for p, p_prev, s in zip(P, P_prev, S)],
-            on_last_point)
-        with ops.control_dependencies(update_P):
-          return point_index.assign_add(1)
+            move_to_next_point,
+            on_all_points_computed)
+        ]):
+          return point_index.assign(point_index + 1)
 
     def train_and_slice():
-      if hasattr(self.optimizer, 'stop_training_batch'):
-        optimizer_stop_training_batch = self.optimizer.stop_training_batch
-      else:
-        optimizer_stop_training_batch = K.constant(True, dtype='bool')
-      def on_start_trianing_batch():
-        with ops.control_dependencies([num_of_points.assign(0), losses[0].assign(loss), iterations.assign_add(1)]):
-          return K.constant(0)
-      init_batch = control_flow_ops.cond(optimizer_stop_training_batch, on_start_trianing_batch, lambda: K.constant(0))
-      with ops.control_dependencies([init_batch]):
-        with ops.control_dependencies(self.optimizer.get_updates(loss, P)):
-          prepare_slice = control_flow_ops.cond(optimizer_stop_training_batch, compute_slice_1d_points, lambda: K.constant(0))
-          with ops.control_dependencies([prepare_slice]):
-            return point_index.assign(2)
+      def do_slice():
+        def compute_points():
+          step_end_point = step_norm / self.tiny_norm
+          assign_relative_sampling_points = [
+            points[0].assign(0.),
+            points[1].assign(step_end_point),
+          ]
+          pi = 2
+          for i in range(len(self.relative_sampling)):
+            if self.relative_sampling[i] == 0 or self.relative_sampling[i] == 1:
+              continue
+            assign_relative_sampling_points.append(points[pi].assign(step_end_point * self.relative_sampling[i]))
+            pi += 1
 
-    with ops.control_dependencies([store_initial_params()]):
-      return [control_flow_ops.cond(
+          with ops.control_dependencies(assign_relative_sampling_points + [point_index.assign(pi)]):
+            min_relative_sampling_point = 0. if pi == 2 else (step_end_point * self.relative_sampling[0])
+            max_relative_sampling_point = 0. if pi == 2 else (step_end_point * self.relative_sampling[-1])
+            k_absolute_sampling = K.variable(self.absolute_sampling, dtype='float32')
+            def check_absolute_sampling_point(i):
+              def assign_absolute_sampling_point():
+                with ops.control_dependencies([
+                    points[point_index].assign(k_absolute_sampling[i]),
+                    point_index.assign_add(1),
+                  ]):
+                  return i + 1
+              return control_flow_ops.cond(math_ops.logical_or(
+                  math_ops.less(k_absolute_sampling[i], min_relative_sampling_point),
+                  math_ops.greater(k_absolute_sampling[i], max_relative_sampling_point)
+                  ),
+                  lambda: assign_absolute_sampling_point(),
+                  lambda: i + 1)
+            assign_absolute_sampling_points = control_flow_ops.while_loop(
+                lambda i: math_ops.less(i, len(self.absolute_sampling)),
+                check_absolute_sampling_point,
+                [K.constant(0, dtype='int32')])
+            with ops.control_dependencies([assign_absolute_sampling_points]):
+              return num_of_points.assign(point_index)
+
+        with ops.control_dependencies(
+          [s.assign(p_prev - p) for s, p_prev, p in zip(S, P_prev, P)]
+        ):
+          with ops.control_dependencies(
+            [p_cache.assign(p) for p_cache, p in zip(P_cache, P)]
+          ):
+            with ops.control_dependencies([
+              step_norm.assign(math_ops.sqrt(math_ops.reduce_sum([math_ops.reduce_sum(math_ops.square(s)) for s in S])))
+            ]):
+              return control_flow_ops.cond(
+                math_ops.equal(step_norm, 0.),
+                lambda: num_of_points.assign(0),
+                compute_points)
+
+      def do_train():
+        grads = self.optimizer.get_gradients(loss, params)
+        grad_norm_new = math_ops.sqrt(math_ops.reduce_sum([math_ops.reduce_sum(math_ops.square(g)) for g in grads]))
+
+        with ops.control_dependencies([
+          grad_norm.assign(grad_norm_new),
+        ]):
+          return self.optimizer.get_updates(loss, P)
+
+      with ops.control_dependencies(
+        do_train() +
+        [
+          num_of_points.assign(0),
+          losses[0].assign(loss),
+          iterations.assign_add(1),
+        ]
+      ):
+        with ops.control_dependencies([
+          do_slice(),
+        ]):
+          # loss of point 0 is already computed.
+          # loss of point 1 will be computed at next iteration.
+          # point_index = 2 means params will be moved to point 2 at next iteration after loss of point 1 is computed.
+          return point_index.assign(2)
+
+    with ops.control_dependencies([
+      store_initial_params() # this function is called only once.
+    ]):
+      return [
+        control_flow_ops.cond(
           math_ops.less_equal(point_index, num_of_points),
-          compute_slice_1d_loss,
-          train_and_slice)]
+          compute_losses_of_all_points,
+          train_and_slice) # (initially point_index = 2 and num_of_points = 0) or (point_index = num_of_points + 1)
+      ]

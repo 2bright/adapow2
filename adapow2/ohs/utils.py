@@ -50,7 +50,7 @@ def plot_slice_1d(slice_1d, path):
   ax1.set_ylabel('loss', color='b')
   
   fig.tight_layout()
-  plt.title('epoch:' + str(slice_1d['epoch']) + ', batch:' + str(slice_1d['batch']))
+  plt.title('epoch:' + str(slice_1d['epoch']) + ', batch:' + str(slice_1d['batch']) + ', iterations:' + str(slice_1d['iterations']))
   plt.savefig(path + slice_1d_name(slice_1d) + '.png')
   plt.close()
 

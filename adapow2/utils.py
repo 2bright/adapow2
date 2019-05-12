@@ -64,14 +64,14 @@ def store_history_state(history_state, path):
       seg_v.append(v if v != np.inf else -1)
       seg_i.append(vi)
 
-      if len(seg_v) > 1 and ((v == 0. and seg_v[0] != 0.) or (v != 0. and seg_v[0] == 0.)):
-        segs.append([seg_i, seg_v, 'g-' if seg_v[0] != 0. else 'r-'])
+      if len(seg_v) > 1 and ((v <= 0. and seg_v[0] > 0.) or (v > 0. and seg_v[0] <= 0.)):
+        segs.append([seg_i, seg_v, 'g-' if seg_v[0] > 0. else 'r-'])
         seg_i = []
         seg_v = []
         seg_v.append(v if v != np.inf else -1)
         seg_i.append(vi)
 
-    segs.append([seg_i, seg_v, 'g-' if seg_v[0] != 0. else 'r-'])
+    segs.append([seg_i, seg_v, 'g-' if seg_v[0] > 0. else 'r-'])
     
     for seg in segs:
       ax1.plot(*seg)

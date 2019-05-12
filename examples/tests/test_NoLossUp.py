@@ -8,7 +8,7 @@ import time
 import glob
 import hashlib
 import json
-from adapow2.x import MultiStepProbing as MSP
+from adapow2.x import NoLossUp
 from adapow2.ohs import OptimizerHyperspaceSlice as OHS
 import kv_prod_union as kv
 
@@ -26,8 +26,8 @@ except:
 data_len = None
 
 def test_model(hp, md):
-  optimizer = MSP(hp)
-  # optimizer = OHS(MSP(hp), save_path=hp['save_path'])
+  optimizer = NoLossUp(hp)
+  # optimizer = OHS(NoLossUp(hp), save_path=hp['save_path'])
 
   ds = get_dataset(md['dataset'])
   time1 = time.time()
@@ -45,15 +45,16 @@ def test_model(hp, md):
 model_dataset_samples = kv.compile({
   ('model', 'dataset', 'epochs', 'batch_size', 'regularization'):
   [
-    # (['mnist_tf_demo'], 'mnist', 30, 128, 'l2'),
-    (['mnist_logreg', 'mnist_tf_demo', 'mnist_2_layers', 'mnist_2_layers_l2', 'mnist_vae', 'mnist_mlp', 'mnist_2c2d'], 'mnist', 30, 128, 'l2'),
+    (['mnist_2_layers'], 'mnist', 10, 128, 'l2'),
+    # (['mnist_logreg', 'mnist_tf_demo'], 'mnist', 30, 128, 'l2'),
+    # (['mnist_logreg', 'mnist_tf_demo', 'mnist_2_layers', 'mnist_2_layers_l2', 'mnist_vae', 'mnist_mlp', 'mnist_2c2d'], 'mnist', 50, 128, 'l2'),
   ]
 })
 
 adapow2_config = {
-  ('multistep_n', 'adapting_cycle', 'store_history_state', 'static_step_pows'):
+  ('pow2_increase_delta', 'pow2_decrease_delta', 'store_history_state'):
   [
-    (10, 300, True, None),
+    (0.1, 1.0, True),
   ]
 }
 
@@ -65,7 +66,7 @@ for md in model_dataset_samples:
   print(md)
   for hp in adapow2_hyperparameters:
     hp['save_path'] = 'data.ohs.' + md['model']
-    hp['history_state_path'] = 'data.MultiStepProbing.' + md['model']
+    hp['history_state_path'] = 'data.NoLossUp.' + md['model']
     print(hp)
     index += 1
     hp_str = json.dumps(hp, indent=2, cls=NumpyEncoder)

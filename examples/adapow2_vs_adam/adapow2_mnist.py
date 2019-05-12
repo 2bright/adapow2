@@ -1,5 +1,5 @@
 import tensorflow as tf
-from adapow2 import MultiStepProbing as MSP
+import adapow2
 mnist = tf.keras.datasets.mnist
 
 (x_train, y_train),(x_test, y_test) = mnist.load_data()
@@ -12,7 +12,7 @@ model = tf.keras.models.Sequential([
   tf.keras.layers.Dense(10, activation='softmax')
 ])
 
-model.compile(optimizer=MSP(),
+model.compile(optimizer=adapow2.x.MultiStepProbing({'store_history_state':True}),
               loss='sparse_categorical_crossentropy',
               metrics=['accuracy'])
 

@@ -3,7 +3,7 @@ from tensorflow.keras.optimizers import Optimizer
 from tensorflow.keras import backend as K
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import math_ops, control_flow_ops
-from . import utils
+from .. import utils
 
 class MultiStepProbing(Optimizer):
   """MultiStepProbing is an adaptive gradient descent optimizer, which adjusting the power of 2 of a tiny step size using multiple steps probing.
@@ -38,24 +38,37 @@ class MultiStepProbing(Optimizer):
 
     self.stop_training_batch = K.variable(True, dtype='bool')
     self.pow2 = K.variable(5., dtype='float32')
+    self.pow2_max_prev_epoch = K.variable(np.inf, dtype='float32')
+    self.pow2_max_curr_epoch = K.variable(0., dtype='float32')
 
   def get_config(self):
     base_config = super(MultiStepProbing, self).get_config()
     return dict(list(base_config.items()) + list(self._config.items()))
 
-  def on_epoch_begin(self, epoch):
+  def on_epoch_begin(self, epoch_logs):
     self._history_state = None
+
+    K.get_session().run([
+      self.pow2_max_curr_epoch.assign(0.),
+    ])
 
     if self._config['static_pow2'] is not None:
       static_pow2 = self._config['static_pow2'] if isinstance(self._config['static_pow2'], list) else [self._config['static_pow2']]
       K.get_session().run([
-        self.pow2.assign(static_pow2[min(epoch, len(static_pow2) - 1)]),
+        self.pow2.assign(static_pow2[min(epoch_logs['epoch'], len(static_pow2) - 1)]),
       ])
 
-  def on_epoch_end(self, epoch, epoch_logs):
+  def on_epoch_end(self, epoch_logs):
+    K.get_session().run([
+      self.pow2_max_prev_epoch.assign(
+        math_ops.maximum(self.pow2_max_prev_epoch - 1., self.pow2_max_curr_epoch)
+        if epoch_logs['epoch'] > 0 else self.pow2_max_curr_epoch
+      ),
+    ])
+
     if self._config['store_history_state']:
       utils.mkdir_p(self._config['history_state_path'])
-      utils.store_history_state(self._history_state, self._config['history_state_path'] + '/epoch-' + str(epoch + 1))
+      utils.store_history_state(self._history_state, self._config['history_state_path'] + '/epoch-' + str(epoch_logs['epoch'] + 1))
 
   def on_iteration_end(self, batch_logs = None):
     if self._config['store_history_state']:
@@ -132,14 +145,18 @@ class MultiStepProbing(Optimizer):
 
     def on_adjust():
       def on_best_step():
+        new_pow2 = math_ops.log((math_ops.pow(2., self.pow2 - 1.) + math_ops.pow(2., prev_pow2)) / 2) / math_ops.log(2.)
         with ops.control_dependencies([
-            self.pow2.assign(math_ops.log((math_ops.pow(2., self.pow2 - 1.) + math_ops.pow(2., prev_pow2)) / 2) / math_ops.log(2.)),
-            adjustment_try_count.assign(0),
-            adjustment_timer.assign(0),
-            loss_max.assign(-np.inf),
-            loss_min.assign(np.inf),
-            ]):
-          return K.constant(5)
+          self.pow2.assign(math_ops.minimum(new_pow2, self.pow2_max_prev_epoch)),
+          adjustment_try_count.assign(0),
+          adjustment_timer.assign(0),
+          loss_max.assign(-np.inf),
+          loss_min.assign(np.inf),
+        ]):
+          with ops.control_dependencies([
+            self.pow2_max_curr_epoch.assign(math_ops.maximum(self.pow2, self.pow2_max_curr_epoch)),
+          ]):
+            return K.constant(5)
 
       def on_better_step():
         with ops.control_dependencies([
@@ -199,7 +216,7 @@ class MultiStepProbing(Optimizer):
         loss_avg, loss_nth_up, loss_nth_down = control_flow_ops.cond(
           math_ops.equal(loss_ema_i, 0),
           lambda: (loss_now, 0., 0.),
-          lambda: (loss_ema, (loss_max - loss_ema) / 3., (loss_ema - loss_min) / 3.))
+          lambda: (loss_ema, (loss_max - loss_ema) / 5., (loss_ema - loss_min) / 5.))
 
         return control_flow_ops.cond(
           math_ops.logical_and(math_ops.greater_equal(loss_now, loss_avg), math_ops.less_equal(loss_now, loss_avg + loss_nth_up)),

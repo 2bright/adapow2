@@ -8,8 +8,9 @@ import time
 import glob
 import hashlib
 import json
-from adapow2.x import MultiStepProbing as MSP
+from adapow2.x import LossDiffAvgMaximization
 from adapow2.ohs import OptimizerHyperspaceSlice as OHS
+from adapow2 import ohs
 import kv_prod_union as kv
 
 seed = 2
@@ -26,8 +27,14 @@ except:
 data_len = None
 
 def test_model(hp, md):
-  optimizer = MSP(hp)
-  # optimizer = OHS(MSP(hp), save_path=hp['save_path'])
+  optimizer = LossDiffAvgMaximization(hp)
+  # optimizer = OHS(
+  #   LossDiffAvgMaximization(hp),
+  #   save_path=hp['save_path'],
+  #   relative_sampling = ohs.utils.sampling_config(((1.0, .01), (100, 1), (1000, 10))),
+  #   absolute_sampling = ohs.utils.sampling_config(((1.0, .1),)),
+  #   tiny_step = hp['tiny_step_size']
+  #   )
 
   ds = get_dataset(md['dataset'])
   time1 = time.time()
@@ -45,15 +52,16 @@ def test_model(hp, md):
 model_dataset_samples = kv.compile({
   ('model', 'dataset', 'epochs', 'batch_size', 'regularization'):
   [
-    # (['mnist_tf_demo'], 'mnist', 30, 128, 'l2'),
-    (['mnist_logreg', 'mnist_tf_demo', 'mnist_2_layers', 'mnist_2_layers_l2', 'mnist_vae', 'mnist_mlp', 'mnist_2c2d'], 'mnist', 30, 128, 'l2'),
+    (['mnist_logreg'], 'mnist', 10, 128, 'l2'),
+    # (['mnist_logreg', 'mnist_tf_demo'], 'mnist', 30, 128, 'l2'),
+    # (['mnist_logreg', 'mnist_tf_demo', 'mnist_2_layers', 'mnist_2_layers_l2', 'mnist_vae', 'mnist_mlp', 'mnist_2c2d'], 'mnist', 5, 128, 'l2'),
   ]
 })
 
 adapow2_config = {
-  ('multistep_n', 'adapting_cycle', 'store_history_state', 'static_step_pows'):
+  ('tiny_step_size', 'pow2_delta', 'store_history_state'):
   [
-    (10, 300, True, None),
+    (1e-6, 0.1, True),
   ]
 }
 
@@ -65,7 +73,7 @@ for md in model_dataset_samples:
   print(md)
   for hp in adapow2_hyperparameters:
     hp['save_path'] = 'data.ohs.' + md['model']
-    hp['history_state_path'] = 'data.MultiStepProbing.' + md['model']
+    hp['history_state_path'] = 'data.LossDiffAvgMaximization.' + md['model']
     print(hp)
     index += 1
     hp_str = json.dumps(hp, indent=2, cls=NumpyEncoder)
