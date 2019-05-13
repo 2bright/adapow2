@@ -45,7 +45,7 @@ def test_model(hp, md):
 model_dataset_samples = kv.compile({
   ('model', 'dataset', 'epochs', 'batch_size', 'regularization'):
   [
-    # (['mnist_tf_demo'], 'mnist', 30, 128, 'l2'),
+    # (['mnist_vae'], 'mnist', 30, 128, 'l2'),
     (['mnist_logreg', 'mnist_tf_demo', 'mnist_2_layers', 'mnist_2_layers_l2', 'mnist_vae', 'mnist_mlp', 'mnist_2c2d'], 'mnist', 30, 128, 'l2'),
   ]
 })
