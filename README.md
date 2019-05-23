@@ -1,6 +1,8 @@
 # Adapow2
-  Adapow2 is a serial of adaptive gradient descent optimizers by adjusting the power of 2 of a tiny step size.
-
+  Adapow2是一个基于tensorflow.keras开发的神经网络自适应优化算法，目标是完全替代传统的sgd，并逼近adam的优化速度。该算法在执行每一步优化时，方向与sgd相同，但步长通过自适应机制动态调整，使得该算法有接近adam的优化速度。
+  
+  Adapow2 is a neural network adaptive optimization algorithm based on tensorflow.keras. The goal is to completely replace the traditional sgd and approximate the optimization speed of adam. When the algorithm performs each step of optimization, the direction is the same as sgd, but the step size is dynamically adjusted by the adaptive mechanism, which makes the algorithm have an optimization speed close to adam.
+  
 # usage
 
 ## install
