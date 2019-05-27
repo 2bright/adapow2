@@ -26,7 +26,7 @@ except:
 data_len = None
 
 def test_model(hp, md):
-  optimizer = MSP(hp)
+  optimizer = 'sgd'
   # optimizer = OHS(MSP(hp), save_path=hp['save_path'])
 
   ds = get_dataset(md['dataset'])
